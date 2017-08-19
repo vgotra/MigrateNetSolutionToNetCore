@@ -1,135 +1,68 @@
-﻿$isVerbose = $false # $VerbosePreference -ne 'SilentlyContinue'
+﻿Param([string]$startDirectory = "", [bool]$isVerbose = $false)
+
+if (($startDirectory -eq "") -or (!(Test-Path $startDirectory))){
+    Write-Host "Please specify valid start directory" -ForegroundColor Red
+    return
+}
+
 $backupFolder = "migration_backups"
-$alreadyMigrated = "project.migrated.txt"
-$startDirectory = "c:\Projects"
+$alreadyMigrated = "project.migrated.txt" # used for indicating that project already migrated (if we have few solutions with one and the same project)
+$removeVsUserSettings = $true # will remove .vs folder, *.suo and *.user files
+$removeBackupsAfterMigration = $false # if you have source repository - it safe to remove old files 
 
 $ProjectCommonSettings = New-Object PSObject -Property @{
-        GenerateAssemblyInfo = $false;
+    GenerateAssemblyInfo               = $false;
+    AutoGenerateBindingRedirects       = $true;
+    GenerateBindingRedirectsOutputType = $true;
 }
 
 $LocalNugetServers = @(
     
     # New-Object PSObject -Property @{
-    #     Id = "";
-    #     Url = "";
+    #     Id       = "";
+    #     Url      = "";
     #     Username = "";
     #     Password = ""
     # }
 )
 
-function Write-Collection-Verbose($title, $collection){
-    if ($isVerbose) {
-        Write-Host "`n$title : " -ForegroundColor Green
-        foreach ($item in $collection){
-            Write-Output $item 
-        }
-    }
-}
-
-function Write-Object-Verbose($title, $obj){
-    if ($isVerbose) {
-        Write-Host "`n$title : " -ForegroundColor Green
-        Write-Host $obj
-    }
-}
-
-function Get-NetCore-Project-Type($guidTypes, $outputType){
-    $mappings = @{
-        #web
-        "8BB2217D-0F2D-49D1-97BC-3654ED321F3B" = "web";
-        #mvc
-        "603C0E0B-DB56-11DC-BE95-000D561079B0" = "mvc";
-        "F85E285D-A4E0-4152-9332-AB1D724D3325" = "mvc";
-        "E53F8FEA-EAE0-44A6-8774-FFD645390401" = "mvc";
-        "E3E379DF-F4C6-4180-9B81-6769533ABE47" = "mvc";
-        "349C5851-65DF-11DA-9384-00065B846F21" = "mvc";
-        #mstest
-        "3AC096D0-A1C2-E12C-1390-A8335801FDAB" = "mstest";
-        #class
-        "FAE04EC0-301F-11D3-BF4B-00C04F79EFBC" = "classlib"
-    }
-
-    return "classlib"
-}
-
-function Is-NetCore-Installed {
-    return ((Test-Path 'C:\Program Files\dotnet\sdk') -or (Test-Path 'C:\Program Files (x86)\dotnet\sdk'))
-}
-
-function Get-Solution-Projects($solution){
-    $projects = Get-Content $solution | Select-String '^Project\("{(.+)}"\) = "(.+)", "(.+\.csproj)", "{(.+)}"$' | ForEach-Object {
-        $projectParts = $_.Matches[0].Groups
-        New-Object PSObject -Property @{
-            Type = $projectParts[1];
-            Name = $projectParts[2];
-            File = $projectParts[3];
-            Guid = $projectParts[4]
-        }
-    }
-
-    return $projects
-}
-
-function Get-Project-Packages($packagePath){
-    if (!(Test-Path $packagePath)){
-        return @()
-    }
-
-    $packages = Get-Content $packagePath | Select-String '^.+<package id="(.+)" version="(.+)" targetFramework="(.+)" \/>$' | ForEach-Object {
-        $projectParts = $_.Matches[0].Groups
-        New-Object PSObject -Property @{
-            Id = $projectParts[1];
-            Version = $projectParts[2];
-            TargetFramework = $projectParts[3];
-        }
-    }
-
-    return $packages
-}
-
-function Remove-Bin-Obj-Folders($path){
-    $binPath = Join-Path $path "bin"
-    $objPath = Join-Path $path "obj"
-    
-    if (Test-Path $binPath){
-        Remove-Item -Path $binPath -Recurse -Force
-    }
-    
-    if (Test-Path $objPath){
-        Remove-Item -Path $objPath -Recurse -Force
-    }
-}
-
-function Get-Project-Common-Settings{
+function Generate-Project-Common-Settings {
     $propertyGroups = @("<PropertyGroup>")
 
-    if(!($ProjectCommonSettings.GenerateAssemblyInfo)){
+    if (!($ProjectCommonSettings.GenerateAssemblyInfo)) {
         $propertyGroups += ("<GenerateAssemblyInfo>false</GenerateAssemblyInfo>")
     }
-    
+
+    if ($ProjectCommonSettings.AutoGenerateBindingRedirects) {
+        $propertyGroups += ("<AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>")
+    }
+
+    if ($ProjectCommonSettings.GenerateBindingRedirectsOutputType) {
+        $propertyGroups += ("<GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>")
+    } 
+
     $propertyGroups += ("</PropertyGroup>")
 
     return $propertyGroups -join "`r`n" | Out-String
 }
 
-function Create-Local-Nuget-Config($folder){
-    # TODO: check for existing Nuget.config
+function Create-Local-Nuget-Config($folder) {
     $nugetConfigFile = Join-Path $folder "Nuget.config"
 
-    if (Test-Path $nugetConfigFile){
+    if (Test-Path $nugetConfigFile) {
         # return false as indicator that Nuget.config should not be deleted later
         return $false
     }
 
     $packageSources = @()
 
-    foreach ($server in $LocalNugetServers){
+    foreach ($server in $LocalNugetServers) {
         $packageSources += "<add key=`"$($server.Id)`" value=`"$($server.Url)`" />"
     }
 
     $packageCredentials = @()
 
-    foreach ($server in $LocalNugetServers){
+    foreach ($server in $LocalNugetServers) {
         $pass = [Security.SecurityElement]::Escape($server.Password)
         $packageCredentials += ("<$($server.Id)>")
         $packageCredentials += ("<add key=`"Username`" value=`"$($server.Username)`" />")
@@ -155,29 +88,290 @@ function Create-Local-Nuget-Config($folder){
     return $true
 }
 
-function Delete-Local-Nuget-Config($folder, $shouldBeDeleted){
+function Delete-Local-Nuget-Config($folder, $shouldBeDeleted) {
     $nugetConfigFile = Join-Path $folder "Nuget.config"
 
-    if (!(Test-Path $nugetConfigFile)){
+    if (!(Test-Path $nugetConfigFile)) {
         return 
     }
 
-    if(!($shouldBeDeleted)){
+    if (!($shouldBeDeleted)) {
         return
     }
 
     Remove-Item $nugetConfigFile
 }
 
-function Move-NetCore-Project-Sources($pathToSources){
+function Write-Collection-Verbose($title, $collection) {
+    if ($isVerbose) {
+        Write-Host "`n$title : " -ForegroundColor Green
+        foreach ($item in $collection) {
+            Write-Output $item 
+        }
+    }
+}
+
+function Write-Object-Verbose($title, $obj) {
+    if ($isVerbose) {
+        Write-Host "`n$title : " -ForegroundColor Green
+        Write-Host $obj
+    }
+}
+
+function Get-NetCore-Project-Type($guidTypes, $outputType) {
+    # at current moment - only classlib - without asp.net core to start from general compatibility
+
+    $mappings = @{
+        #web
+        "8BB2217D-0F2D-49D1-97BC-3654ED321F3B" = "web";
+        #mvc
+        "603C0E0B-DB56-11DC-BE95-000D561079B0" = "mvc";
+        "F85E285D-A4E0-4152-9332-AB1D724D3325" = "mvc";
+        "E53F8FEA-EAE0-44A6-8774-FFD645390401" = "mvc";
+        "E3E379DF-F4C6-4180-9B81-6769533ABE47" = "mvc";
+        "349C5851-65DF-11DA-9384-00065B846F21" = "mvc";
+        #mstest
+        "3AC096D0-A1C2-E12C-1390-A8335801FDAB" = "mstest";
+        #class
+        "FAE04EC0-301F-11D3-BF4B-00C04F79EFBC" = "classlib"
+    }
+
+    return "classlib"
+}
+
+function Remove-Bin-Obj-Folders($projectDir) {
+    $binPath = Join-Path $projectDir "bin"
+    $objPath = Join-Path $projectDir "obj"
+    
+    if (Test-Path $binPath) {
+        Remove-Item -Path $binPath -Recurse -Force
+    }
+    
+    if (Test-Path $objPath) {
+        Remove-Item -Path $objPath -Recurse -Force
+    }
+}
+
+function Is-NetCore-Installed {
+    return ((Test-Path 'C:\Program Files\dotnet\sdk') -or (Test-Path 'C:\Program Files (x86)\dotnet\sdk'))
+}
+
+function Is-SqlClient-Usage-Detected($projectDir) {
+    if (!(Test-Path $projectDir)) {
+        return $false
+    }
+
+    $csFiles = Get-ChildItem $projectDir -Include *.cs -File -Recurse
+    
+    foreach ($csFile in $csFiles) {
+        $content = Get-Content -Path $csFile
+        if ($content -like "*using System.Data.SqlClient;*") {
+            return $true
+        }
+    }
+
+    return $false    
+}
+
+function Get-Solution-Projects($solutionPath) {
+    if (!(Test-Path $solutionPath)) {
+        return @()
+    }
+
+    $projects = Get-Content $solutionPath | Select-String '^Project\("{(.+)}"\) = "(.+)", "(.+\.csproj)", "{(.+)}"$' | ForEach-Object {
+        $projectParts = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Type = $projectParts[1].Value;
+            Name = $projectParts[2].Value;
+            File = $projectParts[3].Value;
+            Guid = $projectParts[4].Value;
+        }
+    }
+
+    return $projects
+}
+
+function Get-Project-Bond-Codegen-Items($projectPath) {
+    # for Microsoft Bond - https://github.com/Microsoft/bond
+    if (!(Test-Path $projectPath)) {
+        return @()
+    }
+
+    $bondItems = Get-Content $projectPath | Select-String '^.*<BondCodegen Include="(.+\.bond)" *\/?>$' | ForEach-Object {
+        $items = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Id = $items[1].Value;
+        }
+    }
+
+    return $bondItems
+}
+
+function Get-Project-System-References($projectPath) {
+    if (!(Test-Path $projectPath)) {
+        return @()
+    }
+
+    $references = Get-Content $projectPath | Select-String '^.*<Reference Include="(.+)" *\/?>$' | ForEach-Object {
+        $refs = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Name = $refs[1].Value;
+        }
+    }
+
+    return $references
+}
+
+function Get-Project-System-References($projectPath) {
+    if (!(Test-Path $projectPath)) {
+        return @()
+    }
+
+    $references = Get-Content $projectPath | Select-String '^.*<Reference Include="(.+)" *\/?>$' | ForEach-Object {
+        $refs = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Name = $refs[1].Value;
+        }
+    }
+
+    return $references
+}
+
+function Get-Project-NonSystem-References($projectPath) {
+    if (!(Test-Path $projectPath)) {
+        return @()
+    }
+
+    $fc = Get-Content $projectPath -Raw
+    $matches = $fc | Select-String '(?mi).*<Reference Include="(.*)" *\/?>[\r\n]*.*<HintPath>(.+.dll)<\/HintPath>[\r\n]*.*<\/Reference>' -AllMatches
+
+    if (!($matches.Matches)) {
+        return @()
+    }
+
+    $nonSystemRefs = $matches.Matches | Where-Object { $_.Value -notlike "*, Version=*" }
+    $references = $nonSystemRefs | ForEach-Object {
+        $refs = $_.Groups
+
+        New-Object PSObject -Property @{
+            Name     = $refs[1].Value;
+            HintPath = $refs[2].Value;
+        }
+    }
+
+    return $references
+}
+
+function Remove-Nuget-From-NonSystem-References($projectNonSystemReferences, $projectPackages) {
+    $result = @()
+
+    Write-Collection-Verbose "Input NonSystem References" $projectNonSystemReferences
+    Write-Collection-Verbose "Project Packages" $projectPackages
+    
+    foreach ($nonSystemRef in $projectNonSystemReferences) {
+        $found = $false
+        foreach ($projPkg in $projectPackages) {
+            if ($projPkg.Id -eq $nonSystemRef.Name) {
+                $found = $true
+                break
+            }
+        }
+        if (!($found)) {
+            $result += ($nonSystemRef)
+        }
+    }
+
+    Write-Collection-Verbose "Filtered NonSystem References" $result
+
+    return $result
+}
+
+function Get-Project-Packages($packagesPath) {
+    if (!(Test-Path $packagesPath)) {
+        return @()
+    }
+
+    $packages = Get-Content $packagesPath | Select-String '^.*<package id="(.+)" version="(.+)" targetFramework="(.+)" *\/?>$' | ForEach-Object {
+        $packageParts = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Id              = $packageParts[1].Value;
+            Version         = $packageParts[2].Value;
+            TargetFramework = $packageParts[3].Value;
+        }
+    }
+
+    return $packages
+}
+
+function Get-Project-References($projectPath) {
+    $projects = Get-Content $projectPath | Select-String '^.*<ProjectReference Include="(.+)" *\/?>$' | ForEach-Object {
+        $projectRefsParts = $_.Matches[0].Groups
+        New-Object PSObject -Property @{
+            Path = $projectRefsParts[1].Value;
+        }
+    }
+
+    return $projects
+}
+
+function Substitute-System-References-By-Nuget-Packages($projectDir, $projectReferences, $projectPackages) {
+    if (!(Test-Path $projectDir)) {
+        return @()
+    }
+
+    # sometimes we can use only Common instead of SqlClient Nuget package
+    $nugetDataPackage = "System.Data.Common"
+    if (Is-SqlClient-Usage-Detected $projectDir) {
+        $nugetDataPackage = "System.Data.SqlClient"
+    }
+
+    $mappings = @{
+        "System.Configuration"                  = "System.Configuration.ConfigurationManager";
+        "System.Data"                           = $nugetDataPackage;
+        "System.ComponentModel.DataAnnotations" = "System.ComponentModel.Annotations";
+    }
+
+    Write-Collection-Verbose "Project references" $projectReferences
+    Write-Collection-Verbose "Project packages" $projectPackages
+
+    # add missing project packages    
+    foreach ($projectRef in $projectReferences) {
+        if ($mappings.ContainsKey("$($projectRef.Name)")) {
+            $item = New-Object PSObject -Property @{
+                Id              = $mappings.Get_Item("$($projectRef.Name)");
+                Version         = "";
+                TargetFramework = "";
+            }
+
+            $found = $false
+
+            foreach ($projectPkg in $projectPackages) {
+                if ($projectPkg.Id -eq $item.Id) {
+                    $found = $true
+                    break
+                }
+            }
+
+            if (!($found)) {
+                $projectPackages = [Array]$projectPackages + $item
+            }
+        }
+    }
+
+    Write-Collection-Verbose "Filtered project packages" $projectPackages
+
+    return $projectPackages
+}
+
+function Move-NetCore-Project-Sources($pathToSources) {
     $parentFolder = $pathToSources | Split-Path
     Remove-Item (Join-Path $pathToSources "Class1.cs") 
     Get-ChildItem $pathToSources | Move-Item -Destination $parentFolder -Force
     Remove-Item $pathToSources -Recurse
 }
 
-function Add-Common-Properties-To-Project($projectPath){
-    [xml]$properties = Get-Project-Common-Settings
+function Add-Common-Properties-To-Project($projectPath) {
+    [xml]$properties = Generate-Project-Common-Settings
 
     $xml = [xml](Get-Content $projectPath)
 
@@ -185,7 +379,62 @@ function Add-Common-Properties-To-Project($projectPath){
     $xml.Save($projectPath)
 }
 
-function Migrate-Project-To-NetCore($solutionDir, $project){
+function Add-Bond-Items-To-Project($projectPath, $bondItems) {
+    if (!(Test-Path $projectPath)) {
+        return
+    }
+
+    if (!($bondItems)) {
+        return
+    }
+
+    $itemGroups = @("<ItemGroup>")
+    
+    foreach ($bondItem in $bondItems) {
+        $itemGroups += ("<BondCodegen Include=`"$($bondItem.Id)`" />")
+    }
+    
+    $itemGroups += ("</ItemGroup>")
+
+    $xmlBondItems = [xml]($itemGroups -join "`r`n" | Out-String)
+
+    $xml = [xml](Get-Content $projectPath)
+
+    $xml.Project.AppendChild($xml.ImportNode($xmlBondItems.ItemGroup, $true))
+    $xml.Save($projectPath)
+}
+
+function Add-NonSystem-References-To-Project($projectPath, $projectNonSystemReferences) {
+    if (!(Test-Path $projectPath)) {
+        return
+    }
+
+    if (!($projectNonSystemReferences)) {
+        return
+    }
+
+    $itemGroups = @("<ItemGroup>")
+    
+    foreach ($projectNonSystemRef in $projectNonSystemReferences) {
+        $ref = @"
+<Reference Include=`"$($projectNonSystemRef.Name)`">
+    <HintPath>$($projectNonSystemRef.HintPath)</HintPath>
+</Reference>
+"@
+        $itemGroups += ($ref)
+    }
+    
+    $itemGroups += ("</ItemGroup>")
+
+    [xml]$nonSysRefs = ($itemGroups -join "`r`n" | Out-String)
+
+    $xml = [xml](Get-Content $projectPath)
+
+    $xml.Project.AppendChild($xml.ImportNode($nonSysRefs.ItemGroup, $true))
+    $xml.Save($projectPath)
+}
+
+function Migrate-Project-To-NetCore($solutionDir, $project) {
     # get build configuration ?
     # get pre/post build 
     # what to do with designer files / DependentUpon?
@@ -196,7 +445,7 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
     $projectMigratedIndicator = Join-Path $projectDirPath $alreadyMigrated
 
     # if already migrated - continue
-    if (Test-Path $projectMigratedIndicator){
+    if (Test-Path $projectMigratedIndicator) {
         return
     }
     
@@ -208,7 +457,7 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
     
     $shouldDeleteNugetConfig = $false
 
-    if ($LocalNugetServers.Length -gt 0){
+    if ($LocalNugetServers.Length -gt 0) {
         # create local nuget 
         $shouldDeleteNugetConfig = Create-Local-Nuget-Config $projectDirPath
     }
@@ -216,17 +465,23 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
     # get output type for .Net Core prj type
     $prjType = Get-NetCore-Project-Type $project
 
-    $backupPath = Join-Path $projectDirPath $backupFolder
+    $projectPackagesPath = Join-Path $projectDirPath "packages.config"
+    $projectPackages = Get-Project-Packages $projectPackagesPath
+    $projectReferences = Get-Project-System-References $projectPath
+    $projectPackages = Substitute-System-References-By-Nuget-Packages $projectDirPath $projectReferences $projectPackages
+    $projectNonSystemReferences = Get-Project-NonSystem-References $projectPath
+    $filteredNonSystemReferences = Remove-Nuget-From-NonSystem-References $projectNonSystemReferences $projectPackages
 
-    #backup solution
-    if (!(Test-Path $backupPath)){
+    $bondItems = Get-Project-Bond-Codegen-Items $projectPath
+
+    $backupPath = Join-Path $projectDirPath $backupFolder
+    
+    #backup project
+    if (!(Test-Path $backupPath)) {
         mkdir $backupPath
     }
 
-    $projectPackagesPath = Join-Path $projectDirPath "packages.config"
-    $projectPackages = Get-Project-Packages $projectPackagesPath
-
-    if (Test-Path $projectPackagesPath){
+    if (Test-Path $projectPackagesPath) {
         Write-Host "Moving old packages.config file to backup folder" -ForegroundColor Yellow
         Move-Item $projectPackagesPath $backupPath
     }
@@ -234,11 +489,11 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
     Write-Host "Moving old project file to backup folder" -ForegroundColor Yellow
     Move-Item $projectPath $backupPath
 
-    Write-Host "Create new NetCore project with name: $($project.Name)" -ForegroundColor Green
-
     Remove-Bin-Obj-Folders $projectDirPath
 
-    # create empty solution 
+    Write-Host "Create new NetCore project with name: $($project.Name)" -ForegroundColor Green
+
+    # create new project
     dotnet new $prjType -n $project.Name
 
     Set-Content $projectMigratedIndicator ""
@@ -247,9 +502,17 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
 
     # add common properies for project
     Add-Common-Properties-To-Project $projectPath
+    Add-Bond-Items-To-Project $projectPath $bondItems
 
-    foreach ($projectPackage in $projectPackages){
-        dotnet add package $projectPackage.Id
+    Add-NonSystem-References-To-Project $projectPath $filteredNonSystemReferences
+
+    foreach ($projectPackage in $projectPackages) {
+        if ($projectPackage.Version -eq "") {
+            dotnet add package $projectPackage.Id     
+        }
+        else {
+            dotnet add package $projectPackage.Id -v $projectPackage.Version
+        }
     }
 
     Delete-Local-Nuget-Config $projectDirPath $shouldDeleteNugetConfig
@@ -257,18 +520,7 @@ function Migrate-Project-To-NetCore($solutionDir, $project){
     Set-Location $oldLocation 
 }
 
-function Get-Project-References($projectPath){
-    $projects = Get-Content $projectPath | Select-String '^.+<ProjectReference Include="(.+)">$' | ForEach-Object {
-        $projectParts = $_.Matches[0].Groups
-        New-Object PSObject -Property @{
-            Path = $projectParts[1];
-        }
-    }
-
-    return $projects
-}
-
-function Restore-Project-References($solutionDir, $project){
+function Restore-Project-References($solutionDir, $project) {
     $projectPath = Join-Path $solutionDir $project.File
     $projectDirPath = $projectPath | Split-Path
     $projectName = $projectPath | Split-Path -Leaf
@@ -279,14 +531,14 @@ function Restore-Project-References($solutionDir, $project){
     $oldLocation = Get-Location
     Set-Location $projectDirPath
 
-    foreach ($projectRef in $projectReferences){
+    foreach ($projectRef in $projectReferences) {
         dotnet add $projectName reference $projectRef.Path
     }
 
     Set-Location $oldLocation 
 }
 
-function Migrate-Solution-To-NetCore($solution){
+function Migrate-Solution-To-NetCore($solution) {
     Write-Host "Migrating solution file: $solution" -ForegroundColor Green
 
     $solutionDir = $solution | Split-Path 
@@ -302,7 +554,7 @@ function Migrate-Solution-To-NetCore($solution){
     $backupPath = Join-Path $solutionDir $backupFolder
 
     #backup solution
-    if (!(Test-Path $backupPath)){
+    if (!(Test-Path $backupPath)) {
         mkdir $backupPath
     }
 
@@ -317,7 +569,7 @@ function Migrate-Solution-To-NetCore($solution){
     dotnet new sln -n $solutionName
 
     # add nuget packages
-    foreach ($project in $projects){
+    foreach ($project in $projects) {
         Migrate-Project-To-NetCore $solutionDir $project
 
         # add project to solution
@@ -328,7 +580,7 @@ function Migrate-Solution-To-NetCore($solution){
     Set-Location $oldLocation
 }
 
-function Add-Project-References-To-Migrated-Projects($solution){
+function Add-Project-References-To-Migrated-Projects($solution) {
     Write-Host "Adding references to migrated projects for solution file: $solution" -ForegroundColor Green
 
     $solutionDir = $solution | Split-Path 
@@ -342,33 +594,29 @@ function Add-Project-References-To-Migrated-Projects($solution){
     Write-Collection-Verbose "Projects in Solution" $projects
 
     # add project references
-    foreach ($project in $projects){
+    foreach ($project in $projects) {
         Restore-Project-References $solutionDir $project
     }
     
     Set-Location $oldLocation
 }
 
-function Convert-Packages-To-NetCore-Format($packages){
-    $pkgs = @("<ItemGroup>")
+function Rollback-All-Changes($rootPath) {
+    if ($removeVsUserSettings) {
+        Write-Host "Removing .suo, .user, .vs folders before migration" -ForegroundColor Yellow
 
-    foreach ($package in $packages){
-        $pkg = "<PackageReference Include=`"$($package.Id)`" Version=`"$($package.Version)`" />"
-        $pkgs += $pkg
+        Get-ChildItem $rootPath -Filter *.suo -File -Recurse | % { $_.FullName } |  Remove-Item -Force
+        Get-ChildItem $rootPath -Filter *.user -File -Recurse | % { $_.FullName } |  Remove-Item -Force
+        Get-ChildItem $rootPath -Filter .vz -Directory -Recurse | % { $_.FullName } |  Remove-Item -Force -Recurse
     }
-    
-    $pkgs += ("<ItemGroup>")
 
-    return $pkgs -join "`r`n" | Out-String
-}
-
-function Rollback-All-Changes($rootPath){
+    Write-Host "Restoring backup files before migration" -ForegroundColor Yellow
     # iterate throught all backup folders and move back all backup solution, project and other files
     $backupPaths = Get-ChildItem $rootPath -Filter $backupFolder -Recurse -Directory | % { $_.FullName }
 
     Write-Collection-Verbose "Backup Paths" $backupPaths
 
-    foreach ($backupPath in $backupPaths){
+    foreach ($backupPath in $backupPaths) {
         $parentBackupPath = $backupPath | Split-Path
         
         Get-ChildItem $backupPath | Move-Item -Destination $parentBackupPath -Force
@@ -376,11 +624,12 @@ function Rollback-All-Changes($rootPath){
         Remove-Item $backupPath
     }
 
+    Write-Host "Removing $alreadyMigrated files before migration" -ForegroundColor Yellow
     Get-ChildItem $rootPath -Filter $alreadyMigrated -Recurse | % { $_.FullName } |  Remove-Item
 }
 
 function Migrate-To-NetCore($rootPath) {
-    if (!(Is-NetCore-Installed)){
+    if (!(Is-NetCore-Installed)) {
         Write-Host ".Net Core SDK is not installed" -ForegroundColor Red
         return
     }
@@ -395,18 +644,26 @@ function Migrate-To-NetCore($rootPath) {
     Write-Collection-Verbose "Solutions Paths" $solutionsPaths
 
     # create full structure of .NetCore
-    foreach ($solution in $solutionsPaths){
+    foreach ($solution in $solutionsPaths) {
         Migrate-Solution-To-NetCore $solution
     }
 
     # iterate all projects backups to add references between projects
-    foreach ($solution in $solutionsPaths){
+    foreach ($solution in $solutionsPaths) {
         Add-Project-References-To-Migrated-Projects $solution
     }
 
+    Write-Host "Removing $alreadyMigrated files before migration" -ForegroundColor Yellow
     # remove migration indicators
     Get-ChildItem $rootPath -Filter $alreadyMigrated -Recurse | % { $_.FullName } |  Remove-Item
+
+    if ($removeBackupsAfterMigration) {
+        Write-Host "Removing backup folders after migration" -ForegroundColor Yellow
+        Get-ChildItem $rootPath -Filter $backupFolder -Directory -Recurse | % { $_.FullName } |  Remove-Item -Force -Recurse
+    }
 }
+
+$oldLocation = Get-Location
 
 Rollback-All-Changes $startDirectory
 
@@ -414,6 +671,10 @@ try {
     Migrate-To-NetCore $startDirectory
 }
 catch {
+    Write-Host ("Error: " + $_.Exception.ToString()) -ForegroundColor Red
+    
     # rollback all changes
     Rollback-All-Changes $startDirectory
+
+    Set-Location $oldLocation
 }
