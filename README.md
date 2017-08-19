@@ -3,6 +3,7 @@ PowerShell script for partial migration of .Net Framework solution (except unsup
 Notes: ONLY for TEST usage for checking problems during migration to .Net Core
 
 ## Usage:
+** Please use with source repository to revert changes in case of problems**
 ``` cmd
 .\MigrateNetSolutionToNetCore.ps1 -startDirectory "C:\Path"
 ```
