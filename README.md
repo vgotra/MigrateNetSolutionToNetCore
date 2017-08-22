@@ -2,6 +2,15 @@
 PowerShell script for partial migration of .Net Framework solution (except unsupported - WPF/Windows Forms, etc) to .Net Core solution for checking compatibility
 Notes: ONLY for TEST usage for checking problems during migration to .Net Core
 
+## Possible steps for safe migration
+- migrate solution and subprojects to .Net Framework 4.6.1
+- reuse unit test framework compatible with .Net Core (MsTest2, xUnit, NUnit, etc.) and apply changes to unit tests
+- remove all unused components, code, references
+- replace some system references by compatible Nuget packages (System.ComponentModel.Annotations, etc.)
+- update your Nuget packages to the latest versions
+- create "shims" for easy applying changes later (for instance: derive all api controllers from Base Controller which should be derived from ApiController)
+- move your uncompatible code to separate assembly for easy replacement it later with .Net Core libraries which will be compatible (ASP.NET Web.APi filters, etc.)
+
 ## Usage:
 **Please use with source repository to revert changes in case of problems**
 ``` cmd
